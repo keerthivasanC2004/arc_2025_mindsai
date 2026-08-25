@@ -1,8 +1,8 @@
-name: vsa-blind-arc2
+name: vsa-blind-arc3
 on:
   push:
     branches:
-      - experiment/vsa-blind-arc2-20260825
+      - experiment/vsa-blind-arc3-20260825
   workflow_dispatch:
 jobs:
   blind-evaluation:
@@ -22,28 +22,88 @@ jobs:
           cd /tmp/ssp-slam
           git checkout 65307d1e1eebb82e37345bdd77acdcf9070b777f
           cp /tmp/ssp-slam/sspslam/sspspace.py /tmp/arcvsa/src/sspspace.py
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/arcvsa/src/sspspace.py')
+          s = p.read_text()
+          old = '''def conjsym(K, even=False):
+    d = K.shape[0]
+    n = d*2 + 1 #+ 1*even
+    F = np.zeros((n,K.shape[1]), dtype="complex")
+    # F[1:round(n/2),:] = K
+    # F[round(n/2 + 1):,:] = -np.flip(K,axis=0)
+    F[1:(d+1),:] = K
+    F[(d + 1):,:] = -np.flip(K,axis=0)
+    return F.real
+'''
+          new = '''def conjsym(K, even=False):
+    d = K.shape[0]
+    n = d*2 + 1 + int(even)
+    F = np.zeros((n,K.shape[1]), dtype="complex")
+    F[1:(d+1),:] = K
+    neg_start = d + 2 if even else d + 1
+    F[neg_start:,:] = -np.flip(K,axis=0)
+    return F.real
+'''
+          if old not in s:
+              raise RuntimeError('Expected pinned conjsym implementation not found')
+          p.write_text(s.replace(old, new, 1))
+          print('PATCHED_EVEN_CONJSYM')
+          PY
       - name: Install ARC-VSA dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r /tmp/arcvsa/requirements.txt
-      - name: Verify SSP API compatibility
+      - name: Verify exact 4096D SSP and ARC-VSA compatibility
         run: |
           PYTHONPATH=/tmp/arcvsa/src python - <<'PY'
-          import sspspace
           import numpy as np
+          import sspspace
           space = sspspace.RandomSSPSpace(
               domain_dim=2,
-              ssp_dim=65,
-              domain_bounds=np.array([[-1, 1], [-1, 1]]),
+              ssp_dim=4096,
+              domain_bounds=np.array([[-15, 15], [-15, 15]]),
               length_scale=0.25,
               sampler='norm',
               rng=np.random.default_rng(0),
           )
-          samples = space.get_sample_pts_and_ssps(num_points_per_dim=3)
-          assert len(samples) == 2
-          print('SSP_COMPAT_OK', samples[0].shape, samples[1].shape)
+          assert space.ssp_dim == 4096, space.ssp_dim
+          enc = space.encode(np.array([[0.0, 0.0], [1.0, -1.0]]))
+          assert enc.shape == (2, 4096), enc.shape
+          sample_ssps, sample_pts = space.get_sample_pts_and_ssps(num_points_per_dim=3)
+          assert sample_ssps.shape == (9, 4096), sample_ssps.shape
+          assert sample_pts.shape == (9, 2), sample_pts.shape
+          import vsa
+          assert vsa.SSP_SPACE.ssp_dim == 4096, vsa.SSP_SPACE.ssp_dim
+          centre = vsa.SSP_SPACE.encode(np.array([[0.0, 0.0]]))
+          assert centre.shape == (1, 4096), centre.shape
+          print('SSP_4096_COMPAT_OK', enc.shape, sample_ssps.shape, centre.shape)
           PY
-      - name: Stage 1 - solve with dummy test outputs and freeze
+      - name: Synthetic solver preflight before protected evaluation
+        run: |
+          PYTHONPATH=/tmp/arcvsa/src python - <<'PY'
+          import types
+          from objobj_solver import ObjObjSolver
+          task = {
+              'train': [
+                  {'input': [[0,0,0],[0,1,0],[0,0,0]], 'output': [[0,0,0],[0,1,0],[0,0,0]]},
+                  {'input': [[0,0,2],[0,0,0],[0,0,0]], 'output': [[0,0,2],[0,0,0],[0,0,0]]},
+              ],
+              'test': [
+                  {'input': [[0,0,0],[3,0,0],[0,0,0]], 'output': [[0,0,0],[0,0,0],[0,0,0]]},
+              ],
+          }
+          solver = ObjObjSolver(task)
+          captured = {}
+          def capture(self, train_gen_out_grids, test_gen_out_grids):
+              captured['n_test'] = len(test_gen_out_grids)
+              return 0.0, 0.0
+          solver.print_results = types.MethodType(capture, solver)
+          solver.solve_task()
+          assert captured.get('n_test') == 1, captured
+          print('SYNTHETIC_SOLVER_PREFLIGHT_OK')
+          PY
+      - name: Stage 1 - solve fresh protected tasks with dummy test outputs and freeze
         run: |
           python experiments/run_vsa_blind.py \
             --challenges data/arc-agi-2_evaluation_challenges.json \
@@ -59,7 +119,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vsa-blind-arc2-results
+          name: vsa-blind-arc3-results
           path: |
             vsa_blind_predictions.json
             vsa_blind_predictions.json.sha256
