@@ -1,18 +1,56 @@
-name: vsa-blind-arc3
+name: vsa-blind-arc4
 on:
   push:
     branches:
-      - experiment/vsa-blind-arc3-20260825
+      - experiment/vsa-blind-arc4-20260825
   workflow_dispatch:
 jobs:
   blind-evaluation:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wait for prior protected run and inherit any frozen task IDs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/prior
+          : > /tmp/prior_selected.txt
+          while true; do
+            status=$(gh api repos/keerthivasanC2004/arc_2025_mindsai/actions/runs/32797408918 --jq '.status')
+            conclusion=$(gh api repos/keerthivasanC2004/arc_2025_mindsai/actions/runs/32797408918 --jq '.conclusion // ""')
+            echo "PRIOR_RUN status=$status conclusion=$conclusion"
+            if [ "$status" != "queued" ] && [ "$status" != "in_progress" ]; then
+              break
+            fi
+            sleep 30
+          done
+
+          artifact_id=$(gh api repos/keerthivasanC2004/arc_2025_mindsai/actions/runs/32797408918/artifacts --jq '.artifacts[] | select(.name=="vsa-blind-arc3-results") | .id' | head -n 1 || true)
+          if [ -n "$artifact_id" ]; then
+            echo "PRIOR_ARTIFACT_ID $artifact_id"
+            gh api -H 'Accept: application/vnd.github+json' "repos/keerthivasanC2004/arc_2025_mindsai/actions/artifacts/$artifact_id/zip" > /tmp/prior.zip
+            unzip -q /tmp/prior.zip -d /tmp/prior
+            if [ -s /tmp/prior/vsa_blind_predictions.json ]; then
+              python - <<'PY'
+          import json
+          from pathlib import Path
+          p=Path('/tmp/prior/vsa_blind_predictions.json')
+          data=json.loads(p.read_text())
+          ids=data.get('selected',[])
+          Path('/tmp/prior_selected.txt').write_text('\n'.join(ids)+('\n' if ids else ''))
+          print('PRIOR_SELECTED',ids)
+          PY
+            fi
+          else
+            echo "PRIOR_ARTIFACT none"
+          fi
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Fetch frozen upstream ARC-VSA and compatible SSP implementation
         run: |
           git clone https://github.com/ijoffe/ARC-VSA-2025.git /tmp/arcvsa
@@ -24,10 +62,12 @@ jobs:
           cp /tmp/ssp-slam/sspslam/sspspace.py /tmp/arcvsa/src/sspspace.py
           cd "$GITHUB_WORKSPACE"
           python experiments/patch_sspspace_even.py /tmp/arcvsa/src/sspspace.py
+
       - name: Install ARC-VSA dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r /tmp/arcvsa/requirements.txt
+
       - name: Verify exact 4096D SSP and ARC-VSA compatibility
         run: |
           PYTHONPATH=/tmp/arcvsa/src python - <<'PY'
@@ -53,6 +93,7 @@ jobs:
           assert centre.shape == (1, 4096), centre.shape
           print('SSP_4096_COMPAT_OK', enc.shape, sample_ssps.shape, centre.shape)
           PY
+
       - name: Synthetic solver preflight before protected evaluation
         run: |
           PYTHONPATH=/tmp/arcvsa/src python - <<'PY'
@@ -77,25 +118,30 @@ jobs:
           assert captured.get('n_test') == 1, captured
           print('SYNTHETIC_SOLVER_PREFLIGHT_OK')
           PY
-      - name: Stage 1 - solve fresh protected tasks with dummy test outputs and freeze
+
+      - name: Stage 1 - solve fresh protected tasks with per-task timeout and freeze
         run: |
           python experiments/run_vsa_blind.py \
             --challenges data/arc-agi-2_evaluation_challenges.json \
             --arcvsa /tmp/arcvsa \
+            --extra-exclude-file /tmp/prior_selected.txt \
             --out vsa_blind_predictions.json | tee vsa_solver.log
           test -s vsa_blind_predictions.json
           test -s vsa_blind_predictions.json.sha256
+
       - name: Stage 2 - score frozen predictions
         run: |
           python experiments/score_vsa_blind.py \
             --predictions vsa_blind_predictions.json \
             --solutions data/arc-agi-2_evaluation_solutions.json | tee vsa_score.log
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: vsa-blind-arc3-results
+          name: vsa-blind-arc4-results
           path: |
             vsa_blind_predictions.json
             vsa_blind_predictions.json.sha256
             vsa_solver.log
             vsa_score.log
+            /tmp/prior_selected.txt
