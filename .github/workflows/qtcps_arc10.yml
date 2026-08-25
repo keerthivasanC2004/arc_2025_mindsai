@@ -7,7 +7,7 @@ on:
 jobs:
   blind-evaluation:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -18,7 +18,7 @@ jobs:
           python experiments/qtcps_arc10.py \
             --challenges data/arc-agi-2_evaluation_challenges.json \
             --out qtcps_arc10_predictions.json \
-            --depth 3 --cap 12000 | tee qtcps_solver.log
+            --depth 3 --cap 2000 | tee qtcps_solver.log
           test -s qtcps_arc10_predictions.json
           test -s qtcps_arc10_predictions.json.sha256
       - name: Stage 2 - score immutable frozen predictions
