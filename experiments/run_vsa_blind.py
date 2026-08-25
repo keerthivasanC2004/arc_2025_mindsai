@@ -4,14 +4,11 @@ from pathlib import Path
 
 import interruptingcow
 
-# Match ARC-VSA's own evaluation harness resource limit.
 MAX_SOLVING_TIME = 1000
 
 class SolvingTimeoutException(Exception):
     pass
 
-# Protected evaluation IDs already exposed to scoring in prior frozen experiments.
-# These must never be selected again for development or evaluation.
 EXCLUDE = {
     "80a900e0","45a5af55","4c7dc4dd","31f7f899","7b5033c1",
     "67e490f4","269e22fb","4e34c42c","981571dc","e8686506",
@@ -67,13 +64,19 @@ def main():
     ap.add_argument("--challenges",required=True)
     ap.add_argument("--arcvsa",required=True)
     ap.add_argument("--out",required=True)
+    ap.add_argument("--extra-exclude-file")
     args=ap.parse_args()
+
+    if args.extra_exclude_file and Path(args.extra_exclude_file).exists():
+        extra={x.strip() for x in Path(args.extra_exclude_file).read_text().splitlines() if x.strip()}
+        EXCLUDE.update(extra)
+        print("EXTRA_EXCLUDED",sorted(extra),flush=True)
+
     tasks=json.load(open(args.challenges))
     selected,mx=select(tasks)
     if set(selected) & EXCLUDE:
         raise RuntimeError("Protected/spent task selected")
 
-    # Emit selection before solving so live logs show exactly where execution is.
     print("SELECTED",selected,flush=True)
     print("MAX_PAIRWISE_SIMILARITY",mx,flush=True)
     print("MAX_SOLVING_TIME_SECONDS",MAX_SOLVING_TIME,flush=True)
@@ -90,8 +93,6 @@ def main():
         print(f"TASK_START {index}/10 {tid}",flush=True)
 
         try:
-            # Apply the timeout to both solver construction and solve_task(), matching
-            # the resource-control intent of the upstream ARC-VSA test harness.
             with interruptingcow.timeout(MAX_SOLVING_TIME, exception=SolvingTimeoutException):
                 solver=ObjObjSolver(task)
 
