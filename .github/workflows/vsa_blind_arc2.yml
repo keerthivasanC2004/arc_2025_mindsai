@@ -1,0 +1,46 @@
+name: vsa-blind-arc2
+on:
+  push:
+    branches:
+      - experiment/vsa-blind-arc2-20260825
+  workflow_dispatch:
+jobs:
+  blind-evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Fetch frozen upstream ARC-VSA
+        run: |
+          git clone https://github.com/ijoffe/ARC-VSA-2025.git /tmp/arcvsa
+          cd /tmp/arcvsa
+          git checkout c031a9c6b4885ab03b28fbfdcd97b6b3693df564
+      - name: Install ARC-VSA dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r /tmp/arcvsa/requirements.txt
+      - name: Stage 1 - solve with dummy test outputs and freeze
+        run: |
+          python experiments/run_vsa_blind.py \
+            --challenges data/arc-agi-2_evaluation_challenges.json \
+            --arcvsa /tmp/arcvsa \
+            --out vsa_blind_predictions.json | tee vsa_solver.log
+          test -s vsa_blind_predictions.json
+          test -s vsa_blind_predictions.json.sha256
+      - name: Stage 2 - score frozen predictions
+        run: |
+          python experiments/score_vsa_blind.py \
+            --predictions vsa_blind_predictions.json \
+            --solutions data/arc-agi-2_evaluation_solutions.json | tee vsa_score.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vsa-blind-arc2-results
+          path: |
+            vsa_blind_predictions.json
+            vsa_blind_predictions.json.sha256
+            vsa_solver.log
+            vsa_score.log
