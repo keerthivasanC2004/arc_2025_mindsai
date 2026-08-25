@@ -13,16 +13,36 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Fetch frozen upstream ARC-VSA
+      - name: Fetch frozen upstream ARC-VSA and compatible SSP implementation
         run: |
           git clone https://github.com/ijoffe/ARC-VSA-2025.git /tmp/arcvsa
           cd /tmp/arcvsa
           git checkout c031a9c6b4885ab03b28fbfdcd97b6b3693df564
+          git clone https://github.com/nsdumont/Semantic-Spiking-Neural-SLAM-2023.git /tmp/ssp-slam
+          cd /tmp/ssp-slam
+          git checkout 65307d1e1eebb82e37345bdd77acdcf9070b777f
+          cp /tmp/ssp-slam/sspslam/sspspace.py /tmp/arcvsa/src/sspspace.py
       - name: Install ARC-VSA dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r /tmp/arcvsa/requirements.txt
-          pip install git+https://github.com/ctn-waterloo/sspspace.git@b8be71035a3f3f846c9bd83b34dc2346cb7b0a88
+      - name: Verify SSP API compatibility
+        run: |
+          PYTHONPATH=/tmp/arcvsa/src python - <<'PY'
+          import sspspace
+          import numpy as np
+          space = sspspace.RandomSSPSpace(
+              domain_dim=2,
+              ssp_dim=65,
+              domain_bounds=np.array([[-1, 1], [-1, 1]]),
+              length_scale=0.25,
+              sampler='norm',
+              rng=np.random.default_rng(0),
+          )
+          samples = space.get_sample_pts_and_ssps(num_points_per_dim=3)
+          assert len(samples) == 2
+          print('SSP_COMPAT_OK', samples[0].shape, samples[1].shape)
+          PY
       - name: Stage 1 - solve with dummy test outputs and freeze
         run: |
           python experiments/run_vsa_blind.py \
