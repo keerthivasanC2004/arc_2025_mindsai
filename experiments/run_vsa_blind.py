@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
-import argparse, hashlib, json, os, sys, types
+import argparse, hashlib, json, os, sys, time, types
 from pathlib import Path
+
+import interruptingcow
+
+# Match ARC-VSA's own evaluation harness resource limit.
+MAX_SOLVING_TIME = 1000
+
+class SolvingTimeoutException(Exception):
+    pass
 
 # Protected evaluation IDs already exposed to scoring in prior frozen experiments.
 # These must never be selected again for development or evaluation.
@@ -64,35 +72,83 @@ def main():
     selected,mx=select(tasks)
     if set(selected) & EXCLUDE:
         raise RuntimeError("Protected/spent task selected")
+
+    # Emit selection before solving so live logs show exactly where execution is.
+    print("SELECTED",selected,flush=True)
+    print("MAX_PAIRWISE_SIMILARITY",mx,flush=True)
+    print("MAX_SOLVING_TIME_SECONDS",MAX_SOLVING_TIME,flush=True)
+
     sys.path.insert(0,str(Path(args.arcvsa)/"src"))
     from objobj_solver import ObjObjSolver
     predictions={}
     diagnostics={}
-    for tid in selected:
+
+    for index,tid in enumerate(selected,1):
         task=dummy_task(tasks[tid])
-        solver=ObjObjSolver(task)
         captured={}
-        def blind_print_results(self, train_gen_out_grids, test_gen_out_grids):
-            train_correct=sum(int(g==y) for g,y in zip(train_gen_out_grids,self.train_out_grids))
-            captured["pred"]=[g.get_data().astype(int).tolist() for g in test_gen_out_grids]
-            captured["train_exact"]=train_correct
-            return train_correct/len(self.train_out_grids),0.0
-        solver.print_results=types.MethodType(blind_print_results,solver)
+        started=time.monotonic()
+        print(f"TASK_START {index}/10 {tid}",flush=True)
+
         try:
-            solver.solve_task()
+            # Apply the timeout to both solver construction and solve_task(), matching
+            # the resource-control intent of the upstream ARC-VSA test harness.
+            with interruptingcow.timeout(MAX_SOLVING_TIME, exception=SolvingTimeoutException):
+                solver=ObjObjSolver(task)
+
+                def blind_print_results(self, train_gen_out_grids, test_gen_out_grids):
+                    train_correct=sum(int(g==y) for g,y in zip(train_gen_out_grids,self.train_out_grids))
+                    captured["pred"]=[g.get_data().astype(int).tolist() for g in test_gen_out_grids]
+                    captured["train_exact"]=train_correct
+                    return train_correct/len(self.train_out_grids),0.0
+
+                solver.print_results=types.MethodType(blind_print_results,solver)
+                solver.solve_task()
+
+            elapsed=time.monotonic()-started
             predictions[tid]=captured.get("pred",[])
-            diagnostics[tid]={"train_exact":captured.get("train_exact",0),"n_train":len(task["train"]),"error":None}
-        except Exception as e:
+            diagnostics[tid]={
+                "train_exact":captured.get("train_exact",0),
+                "n_train":len(task["train"]),
+                "error":None,
+                "elapsed_seconds":round(elapsed,3),
+            }
+            print(f"TASK_DONE {index}/10 {tid} elapsed={elapsed:.3f}s train_exact={captured.get('train_exact',0)}/{len(task['train'])}",flush=True)
+
+        except SolvingTimeoutException:
+            elapsed=time.monotonic()-started
             predictions[tid]=[]
-            diagnostics[tid]={"train_exact":0,"n_train":len(task["train"]),"error":type(e).__name__+":"+str(e)}
-    payload={"selected":selected,"max_pairwise_similarity":mx,"predictions":predictions,"diagnostics":diagnostics,"upstream":"ijoffe/ARC-VSA-2025@c031a9c6b4885ab03b28fbfdcd97b6b3693df564"}
+            diagnostics[tid]={
+                "train_exact":0,
+                "n_train":len(task["train"]),
+                "error":f"SolvingTimeoutException:timed out after {MAX_SOLVING_TIME} seconds",
+                "elapsed_seconds":round(elapsed,3),
+            }
+            print(f"TASK_TIMEOUT {index}/10 {tid} elapsed={elapsed:.3f}s",flush=True)
+
+        except Exception as e:
+            elapsed=time.monotonic()-started
+            predictions[tid]=[]
+            diagnostics[tid]={
+                "train_exact":0,
+                "n_train":len(task["train"]),
+                "error":type(e).__name__+":"+str(e),
+                "elapsed_seconds":round(elapsed,3),
+            }
+            print(f"TASK_ERROR {index}/10 {tid} elapsed={elapsed:.3f}s error={type(e).__name__}:{e}",flush=True)
+
+    payload={
+        "selected":selected,
+        "max_pairwise_similarity":mx,
+        "max_solving_time_seconds":MAX_SOLVING_TIME,
+        "predictions":predictions,
+        "diagnostics":diagnostics,
+        "upstream":"ijoffe/ARC-VSA-2025@c031a9c6b4885ab03b28fbfdcd97b6b3693df564",
+    }
     raw=json.dumps(payload,sort_keys=True,separators=(",",":"))
     Path(args.out).write_text(raw)
     sha=hashlib.sha256(raw.encode()).hexdigest()
     Path(args.out+".sha256").write_text(sha+"\n")
-    print("SELECTED",selected)
-    print("MAX_PAIRWISE_SIMILARITY",mx)
-    print("DIAGNOSTICS",json.dumps(diagnostics,sort_keys=True))
-    print("FROZEN_SHA256",sha)
+    print("DIAGNOSTICS",json.dumps(diagnostics,sort_keys=True),flush=True)
+    print("FROZEN_SHA256",sha,flush=True)
 
 if __name__=="__main__": main()
