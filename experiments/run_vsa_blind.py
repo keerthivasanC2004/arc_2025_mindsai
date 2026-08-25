@@ -2,7 +2,14 @@
 import argparse, hashlib, json, os, sys, types
 from pathlib import Path
 
-EXCLUDE = {"80a900e0","45a5af55","4c7dc4dd","31f7f899","7b5033c1","67e490f4","269e22fb","4e34c42c","981571dc","e8686506"}
+# Protected evaluation IDs already exposed to scoring in prior frozen experiments.
+# These must never be selected again for development or evaluation.
+EXCLUDE = {
+    "80a900e0","45a5af55","4c7dc4dd","31f7f899","7b5033c1",
+    "67e490f4","269e22fb","4e34c42c","981571dc","e8686506",
+    "0934a4d8","eee78d87","36a08778","38007db0","7491f3cf",
+    "5545f144","88bcf3b4","4c3d4a41","78332cb0","e12f9a14",
+}
 
 
 def task_features(task):
@@ -24,7 +31,6 @@ def sim(a,b):
 def select(tasks,n=10,threshold=.10):
     ids=sorted(k for k in tasks if k not in EXCLUDE)
     feats={k:task_features(tasks[k]) for k in ids}
-    # deterministic farthest-point selection from lexicographically first task
     chosen=[ids[0]]
     while len(chosen)<n:
         candidates=[]
@@ -56,6 +62,8 @@ def main():
     args=ap.parse_args()
     tasks=json.load(open(args.challenges))
     selected,mx=select(tasks)
+    if set(selected) & EXCLUDE:
+        raise RuntimeError("Protected/spent task selected")
     sys.path.insert(0,str(Path(args.arcvsa)/"src"))
     from objobj_solver import ObjObjSolver
     predictions={}
