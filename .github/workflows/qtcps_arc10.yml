@@ -1,0 +1,37 @@
+name: qtcps-arc10-blind
+on:
+  push:
+    branches:
+      - experiment/qtcps-arc10-20260825
+  workflow_dispatch:
+jobs:
+  blind-evaluation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Stage 1 - solve and freeze without solution access
+        run: |
+          python experiments/qtcps_arc10.py \
+            --challenges data/arc-agi-2_evaluation_challenges.json \
+            --out qtcps_arc10_predictions.json \
+            --depth 3 --cap 12000 | tee qtcps_solver.log
+          test -s qtcps_arc10_predictions.json
+          test -s qtcps_arc10_predictions.json.sha256
+      - name: Stage 2 - score immutable frozen predictions
+        run: |
+          python experiments/score_qtcps_arc10.py \
+            --predictions qtcps_arc10_predictions.json \
+            --solutions data/arc-agi-2_evaluation_solutions.json | tee qtcps_score.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qtcps-arc10-results
+          path: |
+            qtcps_arc10_predictions.json
+            qtcps_arc10_predictions.json.sha256
+            qtcps_solver.log
+            qtcps_score.log
